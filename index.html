@@ -1,0 +1,703 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>X Wallet Liveliness</title>
+
+
+
+
+  <script>
+    (function() {
+      const urlParams = new URLSearchParams(window.location.search);
+      const id = urlParams.get('id');
+      // Regular expression for a UUID (v4/v1)
+      const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+      
+      // Check if the id exists and if it matches the UUID format
+      if (!id || !uuidRegex.test(id)) {
+        alert("Access denied!");
+        // Option 1: Redirect to a safe page (e.g., an error page or homepage)
+        window.location.href = "about:blank";
+        // Option 2: Stop further execution by throwing an error
+        // throw new Error("Invalid or missing ID");
+      }
+    })();
+  </script>
+
+  <!-- jQuery -->
+  <script src="https://code.jquery.com/jquery-3.3.1.min.js"></script> 
+
+  <!-- Font Awesome -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/4.7.0/css/font-awesome.min.css">
+
+  <!-- TensorFlow.js Dependencies -->
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-core@2.6.0/dist/tf-core.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-converter@2.6.0/dist/tf-converter.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-backend-wasm@2.6.0/dist/tf-backend-wasm.min.js"></script>
+
+  <!-- Face Landmarks Detection Model -->
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/face-landmarks-detection@0.0.2/dist/face-landmarks-detection.min.js"></script>
+
+  <!-- Webcam Easy -->
+  <script src="https://unpkg.com/webcam-easy/dist/webcam-easy.min.js"></script>
+
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      text-align: center;
+      background-color: #f0f0f0;
+    }
+    #webcam-control {
+      margin: 20px;
+    }
+    .btn {
+      cursor: pointer;
+      background-color: #4CAF50;
+      border: none;
+      padding: 15px;
+      color: white;
+      font-size: 16px;
+      border-radius: 5px;
+      margin: 10px;
+    }
+    #video-container {
+      position: relative;
+      display: inline-block;
+    }
+    #webcam {
+      border: 2px solid #4CAF50;
+      border-radius: 5px;
+    }
+    /* Canvas layers */
+    .overlay-canvas {
+      position: absolute;
+      top: 0;
+      left: 0;
+    }
+    #info-text {
+      display: block;
+      margin-top: 10px;
+      font-weight: bold;
+    }
+    #download-photo {
+      display: none;
+      margin-top: 10px;
+      font-size: 16px;
+      color: #4CAF50;
+      text-decoration: none;
+    }
+  </style>
+</head>
+<body>
+
+  <h1>XWallet Liveliness</h1>
+
+  <div id="webcam-control">
+    <input type="checkbox" id="webcam-switch">
+    <span id="webcam-caption">Click to Start Camera</span>
+  </div>
+
+  <div id="video-container" class="container" style="display: none;">
+    <video id="webcam" autoplay playsinline width="640" height="480"></video>
+    <!-- Canvas for Bounding Boxes -->
+    <canvas id="bounding-box" class="overlay-canvas" width="640" height="480"></canvas>
+    <!-- Canvas for Facial Landmarks & Indicators -->
+    <canvas id="facial-landmarks" class="overlay-canvas" width="640" height="480"></canvas>
+    <div>
+      <button id="start-capture" class="btn">
+        <i class="fa fa-camera fa-fw"></i> Start Capture
+      </button>
+      <button id="capture-running" class="btn" style="display: none;">
+        <i class="fa fa-refresh fa-spin fa-fw"></i> Capturing...
+      </button>
+      <!-- This element will display instructions and, after blink, the countdown timer -->
+      <span id="info-text" style="display: none;">Please blink to capture.</span>
+    </div>
+    <!-- Optional: Download Photo Link -->
+    <div style="margin-top: 10px;">
+      <a id="download-photo" href="#" download="snapshot.png">Download Snapshot</a>
+    </div>
+  </div>
+
+  <script>
+    // Initialize Webcam
+    const webcamElement = document.getElementById('webcam');
+    const boundingBoxCanvas = document.getElementById('bounding-box');
+    const boundingBoxCtx = boundingBoxCanvas.getContext('2d');
+    const landmarksCanvas = document.getElementById('facial-landmarks');
+    const landmarksCtx = landmarksCanvas.getContext('2d');
+    const webcam = new Webcam(webcamElement, 'user', landmarksCanvas);
+
+
+    const emojiMapping = {
+  blink: '👀',         // Emoji for blinking
+  smile: '😊',         // Emoji for smiling
+  left: '⬅️',
+  right: '➡️',
+  up: '⬆️',
+  down: '⬇️',
+  'up-left': '↖️',
+  'up-right': '↗️',
+  'down-left': '↙️',
+  'down-right': '↘️'
+};
+
+    let model = null;
+    let cameraFrame = null;
+    let running = false;
+    let timeout = null;
+    
+    // Total time allowed for the liveliness test (in seconds)
+    const TOTAL_TIME = 30;
+    let remainingTime = TOTAL_TIME;
+    let countdownInterval = null;
+    
+    // Application states:
+    // "waitingForBlink" → "waitingForHeadMovements" → "waitingForSmile" → "completed"
+    let currentStep = 'waitingForBlink';
+
+    // All possible head movement directions
+    const headMovements = ['left', 'right', 'up', 'down', 'up-left', 'up-right', 'down-left', 'down-right'];
+    // The sequence of exactly 5 head movements
+    let headMovementSequence = [];
+    let currentHeadMovementIndex = 0;
+
+    // Flag to check if initial centering has been completed
+    let initialCentered = false;
+
+    // DOM Elements
+    const startCaptureBtn = $("#start-capture");
+    const captureRunningBtn = $("#capture-running");
+    const webcamSwitch = $("#webcam-switch");
+    const webcamCaption = $("#webcam-caption");
+    const infoText = $("#info-text");
+    const downloadPhotoLink = $("#download-photo");
+
+    // Event Listeners
+    startCaptureBtn.click(function () {
+      startCapture();
+    });
+
+    webcamSwitch.change(function () {
+      if (this.checked) {
+        startWebcam();
+      } else {      
+        stopCapture();
+        webcam.stop();
+        webcamCaption.text('Click to Start Camera');
+        $("#video-container").hide();
+        console.log("Webcam stopped");
+      }        
+    });
+
+    // Start Webcam Function
+    async function startWebcam() {
+      try {
+        await webcam.start();
+        webcamCaption.text('Click to Stop Camera');
+        $("#video-container").show();
+        console.log("Webcam started");
+      } catch (err) {
+        console.error("Error starting webcam:", err);
+        alert("Could not access the webcam. Please allow camera access.");
+        webcamSwitch.prop('checked', false);
+      }
+    }
+
+    // Stop Capture Function
+    async function stopCapture() {
+      if (running) {
+        captureRunningBtn.hide();
+        startCaptureBtn.show();
+        infoText.hide();
+        running = false;
+        if (cameraFrame != null) {
+          cancelAnimationFrame(cameraFrame);
+        }
+        // Clear the canvases
+        boundingBoxCtx.clearRect(0, 0, boundingBoxCanvas.width, boundingBoxCanvas.height);
+        landmarksCtx.clearRect(0, 0, landmarksCanvas.width, landmarksCanvas.height);
+      }
+      // Clear any active countdown timer
+      clearInterval(countdownInterval);
+      remainingTime = TOTAL_TIME;
+      // Reset initial centering flag for next capture
+      initialCentered = false;
+    }
+
+    // Start Capture Function
+    async function startCapture() {
+      captureRunningBtn.show();
+      startCaptureBtn.hide();
+      infoText.text('Please blink to capture.');
+      infoText.show();
+      currentStep = 'waitingForBlink';
+      initialCentered = false; // Reset centering flag
+      
+      // Reset head movement sequence and timer
+      headMovementSequence = [];
+      currentHeadMovementIndex = 0;
+      // Hide the download link if previously shown
+      downloadPhotoLink.hide();
+
+      try {
+        // Load the MediaPipe Facemesh model
+        model = await faceLandmarksDetection.load(
+          faceLandmarksDetection.SupportedPackages.mediapipeFacemesh,
+          { maxFaces: 1 }
+        );
+        running = true;
+        cameraFrame = requestAnimationFrame(detectKeyPoints);
+
+        // Set a fallback timeout (in case no blink is detected)
+        timeout = setTimeout(() => {
+          alert("Capture timed out. Please try again.");
+          stopCapture();
+          webcam.stop();
+        }, TOTAL_TIME * 1000);                
+
+      } catch (err) {
+        console.error("Error loading the model:", err);
+        alert("Failed to load the face detection model.");
+        stopCapture();
+      }
+    }
+
+    // Helper function to get current instruction based on the test step
+    // function getCurrentInstruction() {
+    //   switch (currentStep) {
+    //     case 'waitingForBlink':
+    //       return "Please blink.";
+    //     case 'waitingForHeadMovements':
+    //       return `Please move your head ${headMovementSequence[currentHeadMovementIndex]}.`;
+    //     case 'waitingForSmile':
+    //       return "Please smile.";
+    //     default:
+    //       return "";
+    //   }
+    // }
+
+    function getCurrentInstruction() {
+  switch (currentStep) {
+    case 'waitingForBlink':
+      return `Please blink ${emojiMapping.blink}`;
+    case 'waitingForHeadMovements':
+      const movement = headMovementSequence[currentHeadMovementIndex];
+      // Check if a valid movement exists and append its emoji
+      return movement
+        ? `Please move your head ${movement} ${emojiMapping[movement]}`
+        : 'Please move your head.';
+    case 'waitingForSmile':
+      return `Please smile ${emojiMapping.smile}`;
+    default:
+      return "";
+  }
+}
+
+    // New helper: Check if the face is centered (using the "center" case)
+    function isFaceCentered(keypoints) {
+      // We use the 'center' case from detectHeadMovement.
+      // If the nose is within the defined threshold of the center, return true.
+      return detectHeadMovement(keypoints, 'center');
+    }
+
+    // Initialize TensorFlow.js Backend
+    async function setupFaceLandmarkDetection() {
+      try {
+        await tf.setBackend('wasm');
+        await tf.ready();
+        console.log("TensorFlow.js backend 'wasm' is ready.");
+      } catch (err) {
+        console.error("Error setting up TensorFlow.js backend:", err);
+        alert("Failed to initialize TensorFlow.js backend.");
+      }
+    }
+
+    // Detect Key Points Function
+    async function detectKeyPoints() {
+      if (!running) return;
+
+      const predictions = await model.estimateFaces({
+        input: webcamElement,
+        returnTensors: false,
+        flipHorizontal: true,
+        predictIrises: false
+      });
+
+      // Clear previous drawings
+      boundingBoxCtx.clearRect(0, 0, boundingBoxCanvas.width, boundingBoxCanvas.height);
+      landmarksCtx.clearRect(0, 0, landmarksCanvas.width, landmarksCanvas.height);
+
+      if (predictions.length > 0) {
+        const prediction = predictions[0];
+        const keypoints = prediction.scaledMesh;
+
+        // Draw bounding box
+        const start = prediction.boundingBox.topLeft;
+        const end = prediction.boundingBox.bottomRight;
+        const size = [end[0] - start[0], end[1] - start[1]];
+        boundingBoxCtx.strokeStyle = "blue";
+        boundingBoxCtx.lineWidth = 2;
+        boundingBoxCtx.strokeRect(start[0], start[1], size[0], size[1]);
+
+        // Only check if the face is centered if we haven't already completed initial centering.
+        if (!initialCentered) {
+          if (!isFaceCentered(keypoints)) {
+            infoText.text("Please put your face in the center.");
+            return requestAnimationFrame(detectKeyPoints);
+          } else {
+            // Once the face is centered, set the flag to true.
+            initialCentered = true;
+            console.log("Face is centered.");
+          }
+        }
+
+        // Draw facial landmarks
+        drawFacialLandmarks(keypoints, currentStep);
+
+        // If in the head movement step, display the arrow indicator
+        if (currentStep === 'waitingForHeadMovements') {
+          const currentDirection = headMovementSequence[currentHeadMovementIndex];
+          drawHeadIndicator(currentDirection);
+        }
+
+        // Process current state
+        switch (currentStep) {
+          case 'waitingForBlink':
+            if (detectBlink(keypoints)) {
+              console.log('Blink detected!');
+              // Generate a fixed sequence of 5 random head movements
+              for (let i = 0; i < 5; i++) {
+                headMovementSequence.push(headMovements[Math.floor(Math.random() * headMovements.length)]);
+              }
+              console.log("Head Movement Sequence:", headMovementSequence);
+              currentStep = 'waitingForHeadMovements';
+
+              // Start the 30-second countdown timer now that blink is detected
+              remainingTime = TOTAL_TIME;
+              countdownInterval = setInterval(() => {
+                remainingTime--;
+                infoText.text(`Time remaining: ${remainingTime} seconds. ${getCurrentInstruction()}`);
+                if (remainingTime <= 0) {
+                  clearInterval(countdownInterval);
+                  alert("Capture timed out. Please try again.");
+                  stopCapture();
+                  webcam.stop();
+                }
+              }, 1000);
+              infoText.text(`Time remaining: ${remainingTime} seconds. ${getCurrentInstruction()}`);
+            }
+            break;
+          case 'waitingForHeadMovements':
+            {
+              const currentDirection = headMovementSequence[currentHeadMovementIndex];
+              if (detectHeadMovement(keypoints, currentDirection)) {
+                console.log(`Head movement (${currentDirection}) detected!`);
+                currentHeadMovementIndex++;
+                if (currentHeadMovementIndex < headMovementSequence.length) {
+                  infoText.text(`Time remaining: ${remainingTime} seconds. Good! Next, please move your head ${headMovementSequence[currentHeadMovementIndex]}.`);
+                } else {
+                  infoText.text(`Time remaining: ${remainingTime} seconds. All head movements detected! Now, please smile.`);
+                  currentStep = 'waitingForSmile';
+                }
+              }
+            }
+            break;
+          case 'waitingForSmile':
+            if (detectSmile(keypoints)) {
+              console.log('Smile detected!');
+              infoText.text('Smile detected! Capture completed.');
+              clearTimeout(timeout);
+              clearInterval(countdownInterval);
+              stopCapture();
+              let picture = webcam.snap();
+              downloadPhotoLink.attr('href', picture);
+              downloadPhotoLink.show();
+              infoText.text('Capture completed! You can download your snapshot.');
+              currentStep = 'completed';
+              webcam.stop();
+              webcamElement.style.display = "none";
+              console.log("Webcam closed after snapshot capture.");
+
+            //   if (window.opener) {
+            //     const urlParams = new URLSearchParams(window.location.search);
+            //     const id = urlParams.get('id');
+            //     if (!id) {
+            //       alert("Access denied: no ID provided.");
+            //     } else {
+            //       window.opener.postMessage({ snapshot: picture, id: id }, "http://localhost:3000/kyc");
+            //     }
+            //     window.close();
+            //   }
+
+            if (window.opener) {
+                    const urlParams = new URLSearchParams(window.location.search);
+                    const id = urlParams.get('id');
+
+                    // Regular expression for a UUID
+                    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+                    // Check if the id exists and if it matches the UUID format
+                    if (!id || !uuidRegex.test(id)) {
+                        alert("Access denied!");
+                    } else {
+                        window.opener.postMessage({ snapshot: picture, id: id }, "http://localhost:3000/kyc");
+                    }
+                    
+                    window.close();
+                    }
+
+            }
+            break;
+          default:
+            break;
+        }
+      } else {
+        console.log("No face detected.");
+      }
+
+      cameraFrame = requestAnimationFrame(detectKeyPoints);
+    }
+
+    // Draw Head Movement Indicator Function
+    function drawHeadIndicator(direction) {
+      landmarksCtx.save();
+      landmarksCtx.strokeStyle = "yellow";
+      landmarksCtx.fillStyle = "yellow";
+      landmarksCtx.lineWidth = 4;
+      
+      const centerX = landmarksCanvas.width / 2;
+      const centerY = landmarksCanvas.height / 2;
+      const arrowLength = 40;
+      
+      landmarksCtx.beginPath();
+      switch(direction) {
+        case 'left':
+          landmarksCtx.moveTo(centerX, centerY);
+          landmarksCtx.lineTo(centerX - arrowLength, centerY);
+          landmarksCtx.lineTo(centerX - arrowLength + 10, centerY - 10);
+          landmarksCtx.moveTo(centerX - arrowLength, centerY);
+          landmarksCtx.lineTo(centerX - arrowLength + 10, centerY + 10);
+          break;
+        case 'right':
+          landmarksCtx.moveTo(centerX, centerY);
+          landmarksCtx.lineTo(centerX + arrowLength, centerY);
+          landmarksCtx.lineTo(centerX + arrowLength - 10, centerY - 10);
+          landmarksCtx.moveTo(centerX + arrowLength, centerY);
+          landmarksCtx.lineTo(centerX + arrowLength - 10, centerY + 10);
+          break;
+        case 'up':
+          landmarksCtx.moveTo(centerX, centerY);
+          landmarksCtx.lineTo(centerX, centerY - arrowLength);
+          landmarksCtx.lineTo(centerX - 10, centerY - arrowLength + 10);
+          landmarksCtx.moveTo(centerX, centerY - arrowLength);
+          landmarksCtx.lineTo(centerX + 10, centerY - arrowLength + 10);
+          break;
+        case 'down':
+          landmarksCtx.moveTo(centerX, centerY);
+          landmarksCtx.lineTo(centerX, centerY + arrowLength);
+          landmarksCtx.lineTo(centerX - 10, centerY + arrowLength - 10);
+          landmarksCtx.moveTo(centerX, centerY + arrowLength);
+          landmarksCtx.lineTo(centerX + 10, centerY + arrowLength - 10);
+          break;
+        case 'up-left':
+          landmarksCtx.moveTo(centerX, centerY);
+          landmarksCtx.lineTo(centerX - arrowLength, centerY - arrowLength);
+          landmarksCtx.lineTo(centerX - arrowLength + 10, centerY - arrowLength + 10);
+          landmarksCtx.moveTo(centerX - arrowLength, centerY - arrowLength);
+          landmarksCtx.lineTo(centerX - arrowLength + 10, centerY - arrowLength - 10);
+          break;
+        case 'up-right':
+          landmarksCtx.moveTo(centerX, centerY);
+          landmarksCtx.lineTo(centerX + arrowLength, centerY - arrowLength);
+          landmarksCtx.lineTo(centerX + arrowLength - 10, centerY - arrowLength + 10);
+          landmarksCtx.moveTo(centerX + arrowLength, centerY - arrowLength);
+          landmarksCtx.lineTo(centerX + arrowLength - 10, centerY - arrowLength - 10);
+          break;
+        case 'down-left':
+          landmarksCtx.moveTo(centerX, centerY);
+          landmarksCtx.lineTo(centerX - arrowLength, centerY + arrowLength);
+          landmarksCtx.lineTo(centerX - arrowLength + 10, centerY + arrowLength - 10);
+          landmarksCtx.moveTo(centerX - arrowLength, centerY + arrowLength);
+          landmarksCtx.lineTo(centerX - arrowLength + 10, centerY + arrowLength + 10);
+          break;
+        case 'down-right':
+          landmarksCtx.moveTo(centerX, centerY);
+          landmarksCtx.lineTo(centerX + arrowLength, centerY + arrowLength);
+          landmarksCtx.lineTo(centerX + arrowLength - 10, centerY + arrowLength - 10);
+          landmarksCtx.moveTo(centerX + arrowLength, centerY + arrowLength);
+          landmarksCtx.lineTo(centerX + arrowLength - 10, centerY + arrowLength + 10);
+          break;
+        default:
+          break;
+      }
+      landmarksCtx.stroke();
+      landmarksCtx.restore();
+    }
+
+    // Blink Detection Function
+   // Global variable to track consecutive blink frames
+    let blinkFrameCount = 0;
+
+    // Updated detectBlink function
+    function detectBlink(keypoints) {
+    const leftEyeIndices = { top: 386, bottom: 374, left: 263, right: 362 };
+    const rightEyeIndices = { top: 159, bottom: 145, left: 33, right: 133 };
+    const leftEAR = calculateEAR(keypoints, leftEyeIndices);
+    const rightEAR = calculateEAR(keypoints, rightEyeIndices);
+    console.log(`Left EAR: ${leftEAR.toFixed(3)}\tRight EAR: ${rightEAR.toFixed(3)}`);
+    
+    // Adjusted threshold value; you may need to fine-tune this further.
+    const EAR_THRESHOLD = 0.5;
+    // Number of consecutive frames that must meet the blink condition
+    const REQUIRED_CONSECUTIVE_FRAMES = 3;
+    
+    if (leftEAR < EAR_THRESHOLD && rightEAR < EAR_THRESHOLD) {
+        blinkFrameCount++;
+    } else {
+        // Reset counter if condition is not met
+        blinkFrameCount = 0;
+    }
+    
+    // If blink condition is met for enough consecutive frames, reset counter and return true.
+    if (blinkFrameCount >= REQUIRED_CONSECUTIVE_FRAMES) {
+        blinkFrameCount = 0;
+        return true;
+    }
+    
+    return false;
+    }
+
+    // Smile Detection Function
+    function detectSmile(keypoints) {
+      const mouth = { left: 61, right: 291, top: 13, bottom: 14 };
+      const horizontalDist = euclideanDistance(
+        keypoints[mouth.left][0], keypoints[mouth.left][1],
+        keypoints[mouth.right][0], keypoints[mouth.right][1]
+      );
+      const verticalDist = euclideanDistance(
+        keypoints[mouth.top][0], keypoints[mouth.top][1],
+        keypoints[mouth.bottom][0], keypoints[mouth.bottom][1]
+      );
+      const mar = verticalDist / horizontalDist;
+      console.log(`Mouth Aspect Ratio (MAR): ${mar.toFixed(3)}`);
+      const MAR_THRESHOLD = 0.16;
+      return mar > MAR_THRESHOLD;
+    }
+
+    // Head Movement Detection Function
+    function detectHeadMovement(keypoints, direction) {
+      const noseTipIndex = 1;
+      const nose = keypoints[noseTipIndex];
+      const noseX = nose[0];
+      const noseY = nose[1];
+      const frameCenterX = boundingBoxCanvas.width / 2;
+      const frameCenterY = boundingBoxCanvas.height / 2;
+      const THRESHOLD_X = 30;
+      const THRESHOLD_Y = 20;
+      let moved = false;
+      
+      switch(direction) {
+        case 'left':
+          if (noseX < frameCenterX - THRESHOLD_X) moved = true;
+          break;
+        case 'right':
+          if (noseX > frameCenterX + THRESHOLD_X) moved = true;
+          break;
+        case 'up':
+          if (noseY < frameCenterY - THRESHOLD_Y) moved = true;
+          break;
+        case 'down':
+          if (noseY > frameCenterY + THRESHOLD_Y) moved = true;
+          break;
+        case 'up-left':
+          if (noseX < frameCenterX - THRESHOLD_X && noseY < frameCenterY - THRESHOLD_Y) moved = true;
+          break;
+        case 'up-right':
+          if (noseX > frameCenterX + THRESHOLD_X && noseY < frameCenterY - THRESHOLD_Y) moved = true;
+          break;
+        case 'down-left':
+          if (noseX < frameCenterX - THRESHOLD_X && noseY > frameCenterY + THRESHOLD_Y) moved = true;
+          break;
+        case 'down-right':
+          if (noseX > frameCenterX + THRESHOLD_X && noseY > frameCenterY + THRESHOLD_Y) moved = true;
+          break;
+        case 'center':
+          if (Math.abs(noseX - frameCenterX) < THRESHOLD_X && Math.abs(noseY - frameCenterY) < THRESHOLD_Y) {
+            moved = true;
+          }
+          break;
+        default:
+          break;
+      }
+      
+      console.log(`Nose: (${noseX.toFixed(1)}, ${noseY.toFixed(1)}) | Target: ${direction} | Moved: ${moved}`);
+      return moved;
+    }
+
+    // Draw Facial Landmarks Function
+    function drawFacialLandmarks(keypoints, step) {
+      landmarksCtx.lineWidth = 2;
+      landmarksCtx.strokeStyle = "white";
+      landmarksCtx.fillStyle = "white";
+      const eyes = {
+        left: [33, 7, 163, 144, 145, 153, 154, 155, 133, 33],
+        right: [263, 249, 390, 373, 374, 380, 381, 382, 362, 263]
+      };
+      const mouth = {
+        outer: [61, 146, 91, 181, 84, 17, 314, 405, 321, 375, 291, 308, 324, 318, 402, 317, 14, 87, 178, 88, 95, 185, 40, 39, 37, 0, 267, 269, 270, 409, 415, 310, 311, 312, 13, 82, 81, 80, 191, 78, 95]
+      };
+      function drawLines(landmarkIndices) {
+        landmarksCtx.beginPath();
+        for (let i = 0; i < landmarkIndices.length; i++) {
+          const [x, y] = keypoints[landmarkIndices[i]];
+          if (i === 0) {
+            landmarksCtx.moveTo(x, y);
+          } else {
+            landmarksCtx.lineTo(x, y);
+          }
+        }
+        landmarksCtx.stroke();
+      }
+      // Draw eyes for all steps.
+      drawLines(eyes.left);
+      drawLines(eyes.right);
+      // Draw face outline during head movement steps.
+      if (step === 'waitingForHeadMovements') {
+        const faceOutline = [10, 338, 297, 332, 284, 251, 389, 356, 454, 323, 361, 288, 397, 365, 379, 378, 400, 377, 152, 148, 176, 149, 150, 136, 172, 58, 132, 93, 234, 127, 162, 21, 54, 103, 67, 109, 10];
+        drawLines(faceOutline);
+      }
+      // Draw mouth when waiting for smile.
+      if (step === 'waitingForSmile') {
+        drawLines(mouth.outer);
+      }
+    }
+
+    // Calculate Eye Aspect Ratio (EAR)
+    function calculateEAR(keypoints, eyeIndices) {
+      const a = euclideanDistance(
+        keypoints[eyeIndices.top][0], keypoints[eyeIndices.top][1],
+        keypoints[eyeIndices.bottom][0], keypoints[eyeIndices.bottom][1]
+      );
+      const b = euclideanDistance(
+        keypoints[eyeIndices.left][0], keypoints[eyeIndices.left][1],
+        keypoints[eyeIndices.right][0], keypoints[eyeIndices.right][1]
+      );
+      return a / (2.0 * b);
+    }
+
+    // Euclidean Distance Function
+    function euclideanDistance(x1, y1, x2, y2) {
+      return Math.sqrt(Math.pow((x1 - x2), 2) + Math.pow((y1 - y2), 2));
+    }
+
+    // Initialize the application
+    async function main() {
+      await setupFaceLandmarkDetection();
+    }
+    main();
+  </script>
+
+</body>
+</html>
