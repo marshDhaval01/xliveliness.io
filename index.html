@@ -461,8 +461,24 @@
                 if (!id || !uuidRegex.test(id)) {
                     alert("Access denied!");
                 } else {
-                    // Make sure the target origin here matches the parent page’s origin.
-                    window.parent.postMessage({ snapshot: picture, id: id }, "http://localhost:3000/kyc");
+                    // // Make sure the target origin here matches the parent page’s origin.
+                    // window.parent.postMessage({ snapshot: picture, id: id }, "http://localhost:3000/kyc");
+
+
+
+                    const payload = { snapshot: picture, id: id };
+
+                        // If inside a React Native WebView, send the message using ReactNativeWebView.postMessage
+                        if (window.ReactNativeWebView && typeof window.ReactNativeWebView.postMessage === 'function') {
+                        window.ReactNativeWebView.postMessage(JSON.stringify(payload));
+                        } else if (window.parent && typeof window.parent.postMessage === 'function') {
+                        // Fallback to the original method if running in a browser container
+
+                        https://xwallet.tradetcx.com/kyc
+                        window.parent.postMessage(payload, "https://xwallet.tradetcx.com/kyc");
+
+                        // window.parent.postMessage(payload, "http://localhost:3000/kyc");
+                        }
                 }
                 // Instead of closing the window, you might want to notify the parent to remove/hide the iframe.
                 }
