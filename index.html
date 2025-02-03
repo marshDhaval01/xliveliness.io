@@ -431,24 +431,43 @@
             //     window.close();
             //   }
 
-            if (window.opener) {
-                    const urlParams = new URLSearchParams(window.location.search);
-                    const id = urlParams.get('id');
+            // if (window.opener) {
+            //         const urlParams = new URLSearchParams(window.location.search);
+            //         const id = urlParams.get('id');
 
-                    // Regular expression for a UUID
-                    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+            //         // Regular expression for a UUID
+            //         const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-                    // Check if the id exists and if it matches the UUID format
-                    if (!id || !uuidRegex.test(id)) {
-                        alert("Access denied!");
-                    } else {
-                        window.opener.postMessage({ snapshot: picture, id: id }, "http://localhost:3000/kyc");
-                    }
+            //         // Check if the id exists and if it matches the UUID format
+            //         if (!id || !uuidRegex.test(id)) {
+            //             alert("Access denied!");
+            //         } else {
+            //             window.opener.postMessage({ snapshot: picture, id: id }, "http://localhost:3000/kyc");
+            //         }
                     
-                    window.close();
-                    }
+            //         window.close();
+            //         }
 
+            // }
+
+            if (window.parent) {
+                const urlParams = new URLSearchParams(window.location.search);
+                const id = urlParams.get('id');
+
+                // Regular expression for a UUID
+                const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+                // Check if the id exists and if it matches the UUID format
+                if (!id || !uuidRegex.test(id)) {
+                    alert("Access denied!");
+                } else {
+                    // Make sure the target origin here matches the parent page’s origin.
+                    window.parent.postMessage({ snapshot: picture, id: id }, "http://localhost:3000/kyc");
+                }
+                // Instead of closing the window, you might want to notify the parent to remove/hide the iframe.
+                }
             }
+
             break;
           default:
             break;
