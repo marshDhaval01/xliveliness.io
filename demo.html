@@ -221,7 +221,7 @@
     const downloadPhotoLink = $("#download-photo");
   
     // Initialize Webcam Easy with lower resolution constraints.
-    let webcam = new Webcam(webcamElement, 'user', landmarksCanvas);
+    let webcam = new Webcam(webcamElement, 'user', landmarksCanvas, { width: 640, height: 480 });
     let model = null;
     let running = false;
     let cameraFrame = null;
